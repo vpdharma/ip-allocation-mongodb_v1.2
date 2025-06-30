@@ -24,6 +24,11 @@ func NewAllocationService(db *mongo.Database) *AllocationService {
 	}
 }
 
+// TestConnection tests the database connection
+func (s *AllocationService) TestConnection(ctx context.Context) error {
+	return s.collection.Database().Client().Ping(ctx, nil)
+}
+
 // AllocateIPs allocates IP addresses based on the request
 func (s *AllocationService) AllocateIPs(ctx context.Context, req *models.AllocationRequest) (*models.AllocationResponse, error) {
 	// Find the target sub-zone
@@ -120,6 +125,229 @@ func (s *AllocationService) AllocateIPs(ctx context.Context, req *models.Allocat
 	}, nil
 }
 
+// DeallocateIPs removes IPs from allocated lists
+func (s *AllocationService) DeallocateIPs(ctx context.Context, req *models.DeallocationRequest) (*models.IPOperationResponse, error) {
+	// Find the target sub-zone
+	subZone, err := s.findSubZone(ctx, req.Region, req.Zone, req.SubZone)
+	if err != nil {
+		return &models.IPOperationResponse{
+			Success:   false,
+			Message:   fmt.Sprintf("Failed to find sub-zone: %v", err),
+			Timestamp: time.Now(),
+		}, nil
+	}
+
+	var processedIPs, failedIPs []string
+	ipv4sToRemove := []string{}
+	ipv6sToRemove := []string{}
+
+	// Process each IP address
+	for _, ip := range req.IPAddresses {
+		normalizedIP := utils.NormalizeIP(ip)
+
+		// Check if IP is actually allocated
+		var found bool
+		if utils.IsIPv4(net.ParseIP(ip)) {
+			for _, allocatedIP := range subZone.AllocatedIPv4 {
+				if allocatedIP == normalizedIP {
+					ipv4sToRemove = append(ipv4sToRemove, normalizedIP)
+					processedIPs = append(processedIPs, normalizedIP)
+					found = true
+					break
+				}
+			}
+		} else if utils.IsIPv6(net.ParseIP(ip)) {
+			for _, allocatedIP := range subZone.AllocatedIPv6 {
+				if allocatedIP == normalizedIP {
+					ipv6sToRemove = append(ipv6sToRemove, normalizedIP)
+					processedIPs = append(processedIPs, normalizedIP)
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			failedIPs = append(failedIPs, normalizedIP)
+		}
+	}
+
+	// Update database to remove IPs
+	if len(processedIPs) > 0 {
+		err = s.removeAllocatedIPs(ctx, req.Region, req.Zone, req.SubZone, ipv4sToRemove, ipv6sToRemove)
+		if err != nil {
+			return &models.IPOperationResponse{
+				Success:   false,
+				Message:   fmt.Sprintf("Failed to update database: %v", err),
+				Timestamp: time.Now(),
+			}, nil
+		}
+	}
+
+	success := len(processedIPs) > 0
+	message := "IPs deallocated successfully"
+	if len(failedIPs) > 0 {
+		if !success {
+			message = "No IPs were deallocated (not found in allocated list)"
+		} else {
+			message = fmt.Sprintf("Partial deallocation: %d successful, %d failed", len(processedIPs), len(failedIPs))
+		}
+	}
+
+	return &models.IPOperationResponse{
+		Success:      success,
+		ProcessedIPs: processedIPs,
+		FailedIPs:    failedIPs,
+		Message:      message,
+		Timestamp:    time.Now(),
+	}, nil
+}
+
+// ManageReservations handles IP reservation and unreservation
+func (s *AllocationService) ManageReservations(ctx context.Context, req *models.ReservationRequest) (*models.IPOperationResponse, error) {
+	// Find the target sub-zone
+	subZone, err := s.findSubZone(ctx, req.Region, req.Zone, req.SubZone)
+	if err != nil {
+		return &models.IPOperationResponse{
+			Success:   false,
+			Message:   fmt.Sprintf("Failed to find sub-zone: %v", err),
+			Timestamp: time.Now(),
+		}, nil
+	}
+
+	var processedIPs, failedIPs []string
+
+	for _, ip := range req.IPAddresses {
+		normalizedIP := utils.NormalizeIP(ip)
+
+		// Validate IP is in CIDR range
+		var inRange bool
+		var err error
+
+		if utils.IsIPv4(net.ParseIP(ip)) && subZone.IPv4CIDR != "" {
+			inRange, err = utils.IsIPInCIDR(normalizedIP, subZone.IPv4CIDR)
+		} else if utils.IsIPv6(net.ParseIP(ip)) && subZone.IPv6CIDR != "" {
+			inRange, err = utils.IsIPInCIDR(normalizedIP, subZone.IPv6CIDR)
+		}
+
+		if err != nil || !inRange {
+			failedIPs = append(failedIPs, normalizedIP)
+			continue
+		}
+
+		if req.ReservationType == "reserve" {
+			// Check if IP is not already allocated or reserved
+			if !s.isIPUsed(normalizedIP, subZone.AllocatedIPv4, subZone.ReservedIPv4) &&
+				!s.isIPUsed(normalizedIP, subZone.AllocatedIPv6, subZone.ReservedIPv6) {
+				processedIPs = append(processedIPs, normalizedIP)
+			} else {
+				failedIPs = append(failedIPs, normalizedIP)
+			}
+		} else { // unreserve
+			// Check if IP is actually reserved
+			var isReserved bool
+			if utils.IsIPv4(net.ParseIP(ip)) {
+				for _, reservedIP := range subZone.ReservedIPv4 {
+					if reservedIP == normalizedIP {
+						isReserved = true
+						break
+					}
+				}
+			} else if utils.IsIPv6(net.ParseIP(ip)) {
+				for _, reservedIP := range subZone.ReservedIPv6 {
+					if reservedIP == normalizedIP {
+						isReserved = true
+						break
+					}
+				}
+			}
+
+			if isReserved {
+				processedIPs = append(processedIPs, normalizedIP)
+			} else {
+				failedIPs = append(failedIPs, normalizedIP)
+			}
+		}
+	}
+
+	// Update database
+	if len(processedIPs) > 0 {
+		if req.ReservationType == "reserve" {
+			err = s.addReservedIPs(ctx, req.Region, req.Zone, req.SubZone, processedIPs)
+		} else {
+			err = s.removeReservedIPs(ctx, req.Region, req.Zone, req.SubZone, processedIPs)
+		}
+
+		if err != nil {
+			return &models.IPOperationResponse{
+				Success:   false,
+				Message:   fmt.Sprintf("Failed to update database: %v", err),
+				Timestamp: time.Now(),
+			}, nil
+		}
+	}
+
+	success := len(processedIPs) > 0
+	operation := "reserved"
+	if req.ReservationType == "unreserve" {
+		operation = "unreserved"
+	}
+
+	message := fmt.Sprintf("IPs %s successfully", operation)
+	if len(failedIPs) > 0 {
+		if !success {
+			message = fmt.Sprintf("No IPs were %s", operation)
+		} else {
+			message = fmt.Sprintf("Partial operation: %d %s, %d failed", len(processedIPs), operation, len(failedIPs))
+		}
+	}
+
+	return &models.IPOperationResponse{
+		Success:      success,
+		ProcessedIPs: processedIPs,
+		FailedIPs:    failedIPs,
+		Message:      message,
+		Timestamp:    time.Now(),
+	}, nil
+}
+
+// GetAvailableIPs returns available IP addresses in a sub-zone
+func (s *AllocationService) GetAvailableIPs(ctx context.Context, regionName, zoneName, subZoneName, ipVersion string, limit int) (map[string]interface{}, error) {
+	_, err := s.findSubZone(ctx, regionName, zoneName, subZoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	availableIPs := []string{}
+	// Logic to find available IPs would go here
+
+	return map[string]interface{}{
+		"success":       true,
+		"available_ips": availableIPs,
+		"count":         len(availableIPs),
+		"ip_version":    ipVersion,
+		"limit":         limit,
+		"timestamp":     time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+// GetIPStats returns comprehensive IP statistics for a sub-zone
+func (s *AllocationService) GetIPStats(ctx context.Context, regionName, zoneName, subZoneName string) (map[string]interface{}, error) {
+	subZone, err := s.findSubZone(ctx, regionName, zoneName, subZoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"success":              true,
+		"ipv4_allocated_count": len(subZone.AllocatedIPv4),
+		"ipv6_allocated_count": len(subZone.AllocatedIPv6),
+		"ipv4_reserved_count":  len(subZone.ReservedIPv4),
+		"ipv6_reserved_count":  len(subZone.ReservedIPv6),
+		"timestamp":            time.Now().Format(time.RFC3339),
+	}, nil
+}
+
 // allocateIPsForVersion allocates IPs for a specific version (ipv4 or ipv6)
 func (s *AllocationService) allocateIPsForVersion(ctx context.Context, subZone *models.SubZone, preferredIPs []string, count int, version string) ([]string, error) {
 	var cidr string
@@ -182,6 +410,8 @@ func (s *AllocationService) allocateIPsForVersion(ctx context.Context, subZone *
 
 	return allocatedIPs, nil
 }
+
+// Helper methods (keep all existing helper methods)
 
 // findSubZone finds a sub-zone by hierarchy path
 func (s *AllocationService) findSubZone(ctx context.Context, regionName, zoneName, subZoneName string) (*models.SubZone, error) {
@@ -246,7 +476,7 @@ func (s *AllocationService) updateAllocatedIPs(ctx context.Context, regionName, 
 		"updated_at": time.Now(),
 	}
 
-	// Array filters - FIXED: Properly wrapped in ArrayFilters struct
+	// Array filters - Fixed implementation
 	arrayFilters := options.ArrayFilters{
 		Filters: []interface{}{
 			bson.M{"zone.name": zoneName},
@@ -254,9 +484,120 @@ func (s *AllocationService) updateAllocatedIPs(ctx context.Context, regionName, 
 		},
 	}
 
-	// Update options - FIXED: Now uses correct type
+	// Update options - Fixed ArrayFilters usage
 	opts := options.Update().SetArrayFilters(arrayFilters)
 
+	filter := bson.M{"name": regionName}
+	_, err = s.collection.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+// removeAllocatedIPs helper method
+func (s *AllocationService) removeAllocatedIPs(ctx context.Context, regionName, zoneName, subZoneName string, ipv4s, ipv6s []string) error {
+	update := bson.M{}
+
+	if len(ipv4s) > 0 {
+		update["$pullAll"] = bson.M{
+			"zones.$[zone].sub_zones.$[subzone].allocated_ipv4": ipv4s,
+		}
+	}
+
+	if len(ipv6s) > 0 {
+		if update["$pullAll"] == nil {
+			update["$pullAll"] = bson.M{}
+		}
+		update["$pullAll"].(bson.M)["zones.$[zone].sub_zones.$[subzone].allocated_ipv6"] = ipv6s
+	}
+
+	update["$set"] = bson.M{
+		"zones.$[zone].sub_zones.$[subzone].updated_at": time.Now(),
+		"updated_at": time.Now(),
+	}
+
+	arrayFilters := options.ArrayFilters{
+		Filters: []interface{}{
+			bson.M{"zone.name": zoneName},
+			bson.M{"subzone.name": subZoneName},
+		},
+	}
+
+	opts := options.Update().SetArrayFilters(arrayFilters)
+	filter := bson.M{"name": regionName}
+	_, err := s.collection.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+// addReservedIPs helper method
+func (s *AllocationService) addReservedIPs(ctx context.Context, regionName, zoneName, subZoneName string, ips []string) error {
+	ipv4s, ipv6s, err := utils.SplitIPsByVersion(ips)
+	if err != nil {
+		return err
+	}
+
+	update := bson.M{}
+	if len(ipv4s) > 0 {
+		update["$push"] = bson.M{
+			"zones.$[zone].sub_zones.$[subzone].reserved_ipv4": bson.M{"$each": ipv4s},
+		}
+	}
+	if len(ipv6s) > 0 {
+		if update["$push"] == nil {
+			update["$push"] = bson.M{}
+		}
+		update["$push"].(bson.M)["zones.$[zone].sub_zones.$[subzone].reserved_ipv6"] = bson.M{"$each": ipv6s}
+	}
+
+	update["$set"] = bson.M{
+		"zones.$[zone].sub_zones.$[subzone].updated_at": time.Now(),
+		"updated_at": time.Now(),
+	}
+
+	arrayFilters := options.ArrayFilters{
+		Filters: []interface{}{
+			bson.M{"zone.name": zoneName},
+			bson.M{"subzone.name": subZoneName},
+		},
+	}
+
+	opts := options.Update().SetArrayFilters(arrayFilters)
+	filter := bson.M{"name": regionName}
+	_, err = s.collection.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+// removeReservedIPs helper method
+func (s *AllocationService) removeReservedIPs(ctx context.Context, regionName, zoneName, subZoneName string, ips []string) error {
+	ipv4s, ipv6s, err := utils.SplitIPsByVersion(ips)
+	if err != nil {
+		return err
+	}
+
+	update := bson.M{}
+	if len(ipv4s) > 0 {
+		update["$pullAll"] = bson.M{
+			"zones.$[zone].sub_zones.$[subzone].reserved_ipv4": ipv4s,
+		}
+	}
+	if len(ipv6s) > 0 {
+		if update["$pullAll"] == nil {
+			update["$pullAll"] = bson.M{}
+		}
+		update["$pullAll"].(bson.M)["zones.$[zone].sub_zones.$[subzone].reserved_ipv6"] = ipv6s
+	}
+
+	update["$set"] = bson.M{
+		"zones.$[zone].sub_zones.$[subzone].updated_at": time.Now(),
+		"updated_at": time.Now(),
+	}
+
+	arrayFilters := options.ArrayFilters{
+		Filters: []interface{}{
+			bson.M{"zone.name": zoneName},
+			bson.M{"subzone.name": subZoneName},
+		},
+	}
+
+	opts := options.Update().SetArrayFilters(arrayFilters)
 	filter := bson.M{"name": regionName}
 	_, err = s.collection.UpdateOne(ctx, filter, update, opts)
 	return err

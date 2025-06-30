@@ -6,70 +6,65 @@ import (
 	"time"
 )
 
-type ErrorResponse struct {
-	Success   bool      `json:"success"`
-	Error     string    `json:"error"`
-	Message   string    `json:"message,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-type SuccessResponse struct {
+// StandardResponse represents a standard API response
+type StandardResponse struct {
 	Success   bool        `json:"success"`
 	Data      interface{} `json:"data,omitempty"`
-	Message   string      `json:"message,omitempty"`
-	Timestamp time.Time   `json:"timestamp"`
+	Message   string      `json:"message"`
+	Timestamp string      `json:"timestamp"`
+	Error     string      `json:"error,omitempty"`
 }
 
-// WriteJSONResponse writes a JSON response with the given status code
+// WriteJSONResponse writes a JSON response
 func WriteJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(data)
 }
 
-// WriteErrorResponse writes an error response
-func WriteErrorResponse(w http.ResponseWriter, statusCode int, errorType, message string) {
-	response := ErrorResponse{
-		Success:   false,
-		Error:     errorType,
+// WriteSuccessResponse writes a successful response
+func WriteSuccessResponse(w http.ResponseWriter, statusCode int, data interface{}, message string) {
+	response := StandardResponse{
+		Success:   true,
+		Data:      data,
 		Message:   message,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().Format(time.RFC3339),
 	}
 	WriteJSONResponse(w, statusCode, response)
 }
 
-// WriteSuccessResponse writes a success response
-func WriteSuccessResponse(w http.ResponseWriter, statusCode int, data interface{}, message string) {
-	response := SuccessResponse{
-		Success:   true,
-		Data:      data,
+// WriteErrorResponse writes an error response with proper signature
+func WriteErrorResponse(w http.ResponseWriter, statusCode int, message string) {
+	response := StandardResponse{
+		Success:   false,
 		Message:   message,
-		Timestamp: time.Now(),
+		Error:     message,
+		Timestamp: time.Now().Format(time.RFC3339),
 	}
 	WriteJSONResponse(w, statusCode, response)
 }
 
 // WriteBadRequestError writes a 400 Bad Request error
 func WriteBadRequestError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusBadRequest, "bad_request", message)
+	WriteErrorResponse(w, http.StatusBadRequest, message)
+}
+
+// WriteValidationError writes a 400 Bad Request validation error
+func WriteValidationError(w http.ResponseWriter, message string) {
+	WriteErrorResponse(w, http.StatusBadRequest, "Validation error: "+message)
 }
 
 // WriteNotFoundError writes a 404 Not Found error
 func WriteNotFoundError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusNotFound, "not_found", message)
-}
-
-// WriteInternalServerError writes a 500 Internal Server Error
-func WriteInternalServerError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusInternalServerError, "internal_server_error", message)
+	WriteErrorResponse(w, http.StatusNotFound, message)
 }
 
 // WriteConflictError writes a 409 Conflict error
 func WriteConflictError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusConflict, "conflict", message)
+	WriteErrorResponse(w, http.StatusConflict, message)
 }
 
-// WriteValidationError writes a 422 Unprocessable Entity error
-func WriteValidationError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusUnprocessableEntity, "validation_error", message)
+// WriteInternalServerError writes a 500 Internal Server Error
+func WriteInternalServerError(w http.ResponseWriter, message string) {
+	WriteErrorResponse(w, http.StatusInternalServerError, message)
 }

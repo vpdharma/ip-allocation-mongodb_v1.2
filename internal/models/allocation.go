@@ -6,6 +6,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+// Core Allocation Models
 type AllocationRequest struct {
 	Region       string   `json:"region" validate:"required"`
 	Zone         string   `json:"zone" validate:"required"`
@@ -22,6 +23,30 @@ type AllocationResponse struct {
 	Timestamp    time.Time `json:"timestamp"`
 }
 
+// Fixed DeallocationRequest with correct field name
+type DeallocationRequest struct {
+	Region      string   `json:"region" validate:"required"`
+	Zone        string   `json:"zone" validate:"required"`
+	SubZone     string   `json:"sub_zone" validate:"required"`
+	IPAddresses []string `json:"ip_addresses" validate:"required,min=1"`
+}
+
+type ReservationRequest struct {
+	Region          string   `json:"region" validate:"required"`
+	Zone            string   `json:"zone" validate:"required"`
+	SubZone         string   `json:"sub_zone" validate:"required"`
+	IPAddresses     []string `json:"ip_addresses" validate:"required,min=1"`
+	ReservationType string   `json:"reservation_type" validate:"required,oneof=reserve unreserve"`
+}
+
+type IPOperationResponse struct {
+	Success      bool      `json:"success"`
+	ProcessedIPs []string  `json:"processed_ips,omitempty"`
+	FailedIPs    []string  `json:"failed_ips,omitempty"`
+	Message      string    `json:"message"`
+	Timestamp    time.Time `json:"timestamp"`
+}
+
 type IPAllocation struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
 	Region    string             `bson:"region" json:"region"`
@@ -34,7 +59,46 @@ type IPAllocation struct {
 	UpdatedAt time.Time          `bson:"updated_at" json:"updated_at"`
 }
 
-// Collection names
-const (
-	IPAllocationCollection = "ip_allocations"
-)
+// CRUD Models - Keep only these, remove duplicates from other files
+type CreateRegionRequest struct {
+	Name     string `json:"name" validate:"required"`
+	IPv4CIDR string `json:"ipv4_cidr,omitempty" validate:"omitempty,cidr"`
+	IPv6CIDR string `json:"ipv6_cidr,omitempty" validate:"omitempty,cidr"`
+}
+
+type UpdateRegionRequest struct {
+	Name     string `json:"name,omitempty"`
+	IPv4CIDR string `json:"ipv4_cidr,omitempty" validate:"omitempty,cidr"`
+	IPv6CIDR string `json:"ipv6_cidr,omitempty" validate:"omitempty,cidr"`
+}
+
+type CreateZoneRequest struct {
+	Name     string `json:"name" validate:"required"`
+	IPv4CIDR string `json:"ipv4_cidr,omitempty" validate:"omitempty,cidr"`
+	IPv6CIDR string `json:"ipv6_cidr,omitempty" validate:"omitempty,cidr"`
+}
+
+type UpdateZoneRequest struct {
+	Name     string `json:"name,omitempty"`
+	IPv4CIDR string `json:"ipv4_cidr,omitempty" validate:"omitempty,cidr"`
+	IPv6CIDR string `json:"ipv6_cidr,omitempty" validate:"omitempty,cidr"`
+}
+
+type CreateSubZoneRequest struct {
+	Name     string `json:"name" validate:"required"`
+	IPv4CIDR string `json:"ipv4_cidr,omitempty" validate:"omitempty,cidr"`
+	IPv6CIDR string `json:"ipv6_cidr,omitempty" validate:"omitempty,cidr"`
+}
+
+type UpdateSubZoneRequest struct {
+	Name     string `json:"name,omitempty"`
+	IPv4CIDR string `json:"ipv4_cidr,omitempty" validate:"omitempty,cidr"`
+	IPv6CIDR string `json:"ipv6_cidr,omitempty" validate:"omitempty,cidr"`
+}
+
+type CRUDResponse struct {
+	Success   bool        `json:"success"`
+	Data      interface{} `json:"data,omitempty"`
+	Message   string      `json:"message"`
+	Timestamp time.Time   `json:"timestamp"`
+}
