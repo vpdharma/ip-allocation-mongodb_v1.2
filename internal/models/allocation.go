@@ -13,7 +13,7 @@ type AllocationRequest struct {
 	SubZone      string   `json:"sub_zone" validate:"required"`
 	PreferredIPs []string `json:"preferred_ips,omitempty"`
 	IPVersion    string   `json:"ip_version" validate:"required,oneof=ipv4 ipv6 both"`
-	Count        int      `json:"count" validate:"min=1,max=10"`
+	Count        int      `json:"count" validate:"min=1,max=100"`
 }
 
 type AllocationResponse struct {
@@ -23,7 +23,7 @@ type AllocationResponse struct {
 	Timestamp    time.Time `json:"timestamp"`
 }
 
-// Fixed DeallocationRequest with correct field name
+// Deallocation Models
 type DeallocationRequest struct {
 	Region      string   `json:"region" validate:"required"`
 	Zone        string   `json:"zone" validate:"required"`
@@ -31,6 +31,7 @@ type DeallocationRequest struct {
 	IPAddresses []string `json:"ip_addresses" validate:"required,min=1"`
 }
 
+// Reservation Models
 type ReservationRequest struct {
 	Region          string   `json:"region" validate:"required"`
 	Zone            string   `json:"zone" validate:"required"`
@@ -47,6 +48,7 @@ type IPOperationResponse struct {
 	Timestamp    time.Time `json:"timestamp"`
 }
 
+// IP Allocation tracking model
 type IPAllocation struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
 	Region    string             `bson:"region" json:"region"`
@@ -59,7 +61,7 @@ type IPAllocation struct {
 	UpdatedAt time.Time          `bson:"updated_at" json:"updated_at"`
 }
 
-// CRUD Models - Keep only these, remove duplicates from other files
+// CRUD Models for enhanced operations
 type CreateRegionRequest struct {
 	Name     string `json:"name" validate:"required"`
 	IPv4CIDR string `json:"ipv4_cidr,omitempty" validate:"omitempty,cidr"`

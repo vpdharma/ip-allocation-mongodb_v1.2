@@ -1,9 +1,10 @@
 package utils
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // StandardResponse represents a standard API response
@@ -15,56 +16,54 @@ type StandardResponse struct {
 	Error     string      `json:"error,omitempty"`
 }
 
-// WriteJSONResponse writes a JSON response
-func WriteJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// WriteSuccessResponse writes a successful response
-func WriteSuccessResponse(w http.ResponseWriter, statusCode int, data interface{}, message string) {
+// WriteSuccessResponse writes a successful JSON response using Gin
+func WriteSuccessResponse(c *gin.Context, statusCode int, data interface{}, message string) {
 	response := StandardResponse{
 		Success:   true,
 		Data:      data,
 		Message:   message,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
-	WriteJSONResponse(w, statusCode, response)
+	c.JSON(statusCode, response)
 }
 
-// WriteErrorResponse writes an error response with proper signature
-func WriteErrorResponse(w http.ResponseWriter, statusCode int, message string) {
+// WriteErrorResponse writes an error JSON response using Gin
+func WriteErrorResponse(c *gin.Context, statusCode int, message string) {
 	response := StandardResponse{
 		Success:   false,
 		Message:   message,
 		Error:     message,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
-	WriteJSONResponse(w, statusCode, response)
+	c.JSON(statusCode, response)
 }
 
 // WriteBadRequestError writes a 400 Bad Request error
-func WriteBadRequestError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusBadRequest, message)
+func WriteBadRequestError(c *gin.Context, message string) {
+	WriteErrorResponse(c, http.StatusBadRequest, message)
 }
 
 // WriteValidationError writes a 400 Bad Request validation error
-func WriteValidationError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusBadRequest, "Validation error: "+message)
+func WriteValidationError(c *gin.Context, message string) {
+	WriteErrorResponse(c, http.StatusBadRequest, "Validation error: "+message)
 }
 
 // WriteNotFoundError writes a 404 Not Found error
-func WriteNotFoundError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusNotFound, message)
+func WriteNotFoundError(c *gin.Context, message string) {
+	WriteErrorResponse(c, http.StatusNotFound, message)
 }
 
 // WriteConflictError writes a 409 Conflict error
-func WriteConflictError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusConflict, message)
+func WriteConflictError(c *gin.Context, message string) {
+	WriteErrorResponse(c, http.StatusConflict, message)
 }
 
 // WriteInternalServerError writes a 500 Internal Server Error
-func WriteInternalServerError(w http.ResponseWriter, message string) {
-	WriteErrorResponse(w, http.StatusInternalServerError, message)
+func WriteInternalServerError(c *gin.Context, message string) {
+	WriteErrorResponse(c, http.StatusInternalServerError, message)
+}
+
+// WriteJSONResponse writes a generic JSON response
+func WriteJSONResponse(c *gin.Context, statusCode int, data interface{}) {
+	c.JSON(statusCode, data)
 }

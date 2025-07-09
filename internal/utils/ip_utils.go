@@ -6,133 +6,91 @@ import (
 	"net"
 )
 
-// ParseCIDR parses a CIDR string and returns network details
-func ParseCIDR(cidr string) (*net.IPNet, error) {
-	_, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid CIDR: %v", err)
-	}
-	return ipnet, nil
-}
-
-// GetFirstIP returns the first usable IP address in a CIDR range
-func GetFirstIP(cidr string) (net.IP, error) {
-	_, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return nil, err
-	}
-
-	// For IPv4, skip network address
-	// For IPv6, first address is usually usable
-	ip := ipnet.IP
-	if IsIPv4(ip) {
-		ip = incrementIP(ip)
-	}
-
-	return ip, nil
-}
-
-// GetLastIP returns the last usable IP address in a CIDR range
-func GetLastIP(cidr string) (net.IP, error) {
-	_, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return nil, err
-	}
-
-	// Calculate broadcast address
-	ip := ipnet.IP
-	mask := ipnet.Mask
-
-	// Create broadcast address
-	broadcast := make(net.IP, len(ip))
-	for i := range ip {
-		broadcast[i] = ip[i] | ^mask[i]
-	}
-
-	// For IPv4, skip broadcast address
-	if IsIPv4(broadcast) {
-		broadcast = decrementIP(broadcast)
-	}
-
-	return broadcast, nil
-}
-
-// IsIPInCIDR checks if an IP address is within a CIDR range
-func IsIPInCIDR(ip, cidr string) (bool, error) {
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return false, fmt.Errorf("invalid IP address: %s", ip)
-	}
-
-	_, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return false, fmt.Errorf("invalid CIDR: %v", err)
-	}
-
-	return ipnet.Contains(parsedIP), nil
-}
-
-// GetNextAvailableIP finds the next available IP in a CIDR range
-func GetNextAvailableIP(cidr string, allocatedIPs, reservedIPs []string) (string, error) {
-	firstIP, err := GetFirstIP(cidr)
-	if err != nil {
-		return "", err
-	}
-
-	lastIP, err := GetLastIP(cidr)
-	if err != nil {
-		return "", err
-	}
-
-	// Create a map for quick lookup of used IPs
-	usedIPs := make(map[string]bool)
-	for _, ip := range allocatedIPs {
-		usedIPs[ip] = true
-	}
-	for _, ip := range reservedIPs {
-		usedIPs[ip] = true
-	}
-
-	// Iterate through the range to find first available IP
-	currentIP := make(net.IP, len(firstIP))
-	copy(currentIP, firstIP)
-
-	for {
-		if compareIPs(currentIP, lastIP) > 0 {
-			return "", fmt.Errorf("no available IP addresses in range")
-		}
-
-		ipStr := currentIP.String()
-		if !usedIPs[ipStr] {
-			return ipStr, nil
-		}
-
-		currentIP = incrementIP(currentIP)
-	}
-}
-
-// IsIPv4 checks if an IP address is IPv4
-func IsIPv4(ip net.IP) bool {
-	return ip.To4() != nil
-}
-
-// IsIPv6 checks if an IP address is IPv6
-func IsIPv6(ip net.IP) bool {
-	return ip.To4() == nil && ip.To16() != nil
-}
-
-// ValidateIPVersion validates IP version string
+// ValidateIPVersion checks if IP version is valid
 func ValidateIPVersion(version string) bool {
 	return version == "ipv4" || version == "ipv6" || version == "both"
 }
 
+// IsIPv4 checks if the IP is IPv4
+func IsIPv4(ip net.IP) bool {
+	return ip != nil && ip.To4() != nil
+}
+
+// IsIPv6 checks if the IP is IPv6
+func IsIPv6(ip net.IP) bool {
+	return ip != nil && ip.To4() == nil && ip.To16() != nil
+}
+
+// NormalizeIP normalizes an IP address string
+func NormalizeIP(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ""
+	}
+
+	if IsIPv4(ip) {
+		return ip.To4().String()
+	}
+	return ip.To16().String()
+}
+
+// ParseCIDR parses a CIDR string and returns the network
+func ParseCIDR(cidr string) (*net.IPNet, error) {
+	_, network, err := net.ParseCIDR(cidr)
+	return network, err
+}
+
+// IsIPInCIDR checks if an IP address is within a CIDR range
+func IsIPInCIDR(ipStr, cidrStr string) (bool, error) {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false, fmt.Errorf("invalid IP address: %s", ipStr)
+	}
+
+	_, network, err := net.ParseCIDR(cidrStr)
+	if err != nil {
+		return false, fmt.Errorf("invalid CIDR: %s", cidrStr)
+	}
+
+	return network.Contains(ip), nil
+}
+
+// GetNextAvailableIP finds the next available IP in a CIDR range
+func GetNextAvailableIP(cidrStr string, allocated, reserved []string) (string, error) {
+	_, network, err := net.ParseCIDR(cidrStr)
+	if err != nil {
+		return "", err
+	}
+
+	// Create a map for faster lookup
+	usedIPs := make(map[string]bool)
+	for _, ip := range allocated {
+		usedIPs[ip] = true
+	}
+	for _, ip := range reserved {
+		usedIPs[ip] = true
+	}
+
+	// Start from the first usable IP in the network
+	ip := network.IP
+	for network.Contains(ip) {
+		ipStr := ip.String()
+		if !usedIPs[ipStr] && !isNetworkOrBroadcast(ip, network) {
+			return ipStr, nil
+		}
+		ip = incrementIP(ip)
+	}
+
+	return "", fmt.Errorf("no available IPs in CIDR range %s", cidrStr)
+}
+
 // incrementIP increments an IP address by 1
 func incrementIP(ip net.IP) net.IP {
-	// Make a copy to avoid modifying the original
+	// Make a copy of the IP
 	result := make(net.IP, len(ip))
 	copy(result, ip)
 
-	// Increment from the last byte
+	// Increment from the rightmost byte
 	for i := len(result) - 1; i >= 0; i-- {
 		result[i]++
 		if result[i] != 0 {
@@ -143,15 +101,107 @@ func incrementIP(ip net.IP) net.IP {
 	return result
 }
 
+// isNetworkOrBroadcast checks if IP is network or broadcast address
+func isNetworkOrBroadcast(ip net.IP, network *net.IPNet) bool {
+	// Network address
+	if ip.Equal(network.IP) {
+		return true
+	}
+
+	// For IPv4, check broadcast address
+	if IsIPv4(ip) {
+		broadcast := make(net.IP, len(network.IP))
+		copy(broadcast, network.IP)
+
+		mask := network.Mask
+		for i := 0; i < len(mask); i++ {
+			broadcast[i] |= ^mask[i]
+		}
+
+		return ip.Equal(broadcast)
+	}
+
+	return false
+}
+
+// CountIPsInCIDR counts the number of usable IPs in a CIDR range
+func CountIPsInCIDR(cidrStr string) (*big.Int, error) {
+	if cidrStr == "" {
+		return big.NewInt(0), nil
+	}
+
+	_, network, err := net.ParseCIDR(cidrStr)
+	if err != nil {
+		return nil, err
+	}
+
+	ones, bits := network.Mask.Size()
+	hostBits := bits - ones
+
+	// Calculate 2^hostBits
+	total := new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(hostBits)), nil)
+
+	// For IPv4, subtract network and broadcast addresses
+	if IsIPv4(network.IP) && hostBits > 1 {
+		total.Sub(total, big.NewInt(2))
+	}
+
+	return total, nil
+}
+
+// SplitIPsByVersion splits a slice of IP addresses by version
+func SplitIPsByVersion(ips []string) ([]string, []string, error) {
+	var ipv4s, ipv6s []string
+
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			return nil, nil, fmt.Errorf("invalid IP address: %s", ipStr)
+		}
+
+		if IsIPv4(ip) {
+			ipv4s = append(ipv4s, NormalizeIP(ipStr))
+		} else if IsIPv6(ip) {
+			ipv6s = append(ipv6s, NormalizeIP(ipStr))
+		}
+	}
+
+	return ipv4s, ipv6s, nil
+}
+
+// GetIPRange returns the first and last usable IPs in a CIDR range
+func GetIPRange(cidrStr string) (string, string, error) {
+	_, network, err := net.ParseCIDR(cidrStr)
+	if err != nil {
+		return "", "", err
+	}
+
+	firstIP := network.IP
+	lastIP := make(net.IP, len(network.IP))
+	copy(lastIP, network.IP)
+
+	// Calculate last IP in range
+	mask := network.Mask
+	for i := 0; i < len(mask); i++ {
+		lastIP[i] |= ^mask[i]
+	}
+
+	// For IPv4, adjust for network and broadcast addresses
+	if IsIPv4(network.IP) {
+		firstIP = incrementIP(firstIP) // Skip network address
+		lastIP = decrementIP(lastIP)   // Skip broadcast address
+	}
+
+	return firstIP.String(), lastIP.String(), nil
+}
+
 // decrementIP decrements an IP address by 1
 func decrementIP(ip net.IP) net.IP {
-	// Make a copy to avoid modifying the original
 	result := make(net.IP, len(ip))
 	copy(result, ip)
 
-	// Decrement from the last byte
 	for i := len(result) - 1; i >= 0; i-- {
-		if result[i] != 0 {
+		if result[i] > 0 {
 			result[i]--
 			break
 		}
@@ -161,77 +211,45 @@ func decrementIP(ip net.IP) net.IP {
 	return result
 }
 
-// compareIPs compares two IP addresses
-// Returns: -1 if ip1 < ip2, 0 if ip1 == ip2, 1 if ip1 > ip2
-func compareIPs(ip1, ip2 net.IP) int {
-	// Convert IPs to big integers for comparison
-	bigInt1 := new(big.Int)
-	bigInt2 := new(big.Int)
-
-	bigInt1.SetBytes(ip1)
-	bigInt2.SetBytes(ip2)
-
-	return bigInt1.Cmp(bigInt2)
+// ValidateIPList validates a list of IP addresses
+func ValidateIPList(ips []string) error {
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			return fmt.Errorf("invalid IP address: %s", ipStr)
+		}
+	}
+	return nil
 }
 
-// CountIPsInCIDR returns the number of usable IP addresses in a CIDR range
-func CountIPsInCIDR(cidr string) (*big.Int, error) {
-	_, ipnet, err := net.ParseCIDR(cidr)
+// GetAvailableIPsInRange returns available IPs in a CIDR range
+func GetAvailableIPsInRange(cidrStr string, allocated, reserved []string, limit int) ([]string, error) {
+	_, network, err := net.ParseCIDR(cidrStr)
 	if err != nil {
 		return nil, err
 	}
 
-	ones, bits := ipnet.Mask.Size()
-	hostBits := bits - ones
-
-	// Calculate 2^hostBits
-	count := new(big.Int)
-	count.Exp(big.NewInt(2), big.NewInt(int64(hostBits)), nil)
-
-	// For IPv4, subtract network and broadcast addresses
-	if IsIPv4(ipnet.IP) && hostBits > 1 {
-		count.Sub(count, big.NewInt(2))
+	// Create map for faster lookup
+	usedIPs := make(map[string]bool)
+	for _, ip := range allocated {
+		usedIPs[ip] = true
+	}
+	for _, ip := range reserved {
+		usedIPs[ip] = true
 	}
 
-	return count, nil
-}
+	var available []string
+	ip := network.IP
+	count := 0
 
-// SplitIPsByVersion separates IPv4 and IPv6 addresses from a slice
-func SplitIPsByVersion(ips []string) (ipv4s []string, ipv6s []string, err error) {
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			return nil, nil, fmt.Errorf("invalid IP address: %s", ipStr)
+	for network.Contains(ip) && count < limit {
+		ipStr := ip.String()
+		if !usedIPs[ipStr] && !isNetworkOrBroadcast(ip, network) {
+			available = append(available, ipStr)
+			count++
 		}
-
-		if IsIPv4(ip) {
-			ipv4s = append(ipv4s, ipStr)
-		} else {
-			ipv6s = append(ipv6s, ipStr)
-		}
+		ip = incrementIP(ip)
 	}
 
-	return ipv4s, ipv6s, nil
-}
-
-// NormalizeIP normalizes an IP address string
-func NormalizeIP(ipStr string) string {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return ipStr
-	}
-	return ip.String()
-}
-
-// GetCIDRVersion returns the IP version of a CIDR block
-func GetCIDRVersion(cidr string) (string, error) {
-	ip, _, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return "", err
-	}
-
-	if IsIPv4(ip) {
-		return "ipv4", nil
-	}
-	return "ipv6", nil
+	return available, nil
 }

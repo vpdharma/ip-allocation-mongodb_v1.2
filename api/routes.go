@@ -1,131 +1,99 @@
 package api
 
 import (
-	"ip-allocator-api/internal/handlers"
-	"log"
-	"net/http"
 	"time"
 
-	"github.com/gorilla/mux"
-	"github.com/rs/cors"
+	"ip-allocator-api/internal/handlers"
+	"ip-allocator-api/internal/middleware"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.uber.org/zap"
 )
 
-func SetupRoutes(db *mongo.Database) http.Handler {
-	// Initialize handlers
-	allocationHandler := handlers.NewAllocationHandler(db)
+func SetupRoutes(db *mongo.Database, logger *zap.Logger) *gin.Engine {
+	// Set Gin mode based on environment
+	gin.SetMode(gin.ReleaseMode) // Use gin.DebugMode for development
 
-	// Create router
-	router := mux.NewRouter()
+	// Create Gin router
+	router := gin.New()
 
-	// Root-level health check (standard practice)
-	router.HandleFunc("/health", allocationHandler.HealthCheck).Methods("GET")
-	router.HandleFunc("/healthz", allocationHandler.HealthCheck).Methods("GET")
+	// Add custom Zap logging middleware
+	router.Use(middleware.ZapLogger(logger))
+	router.Use(middleware.ZapRecovery(logger, true))
 
-	// API version prefix
-	api := router.PathPrefix("/api/v1").Subrouter()
-
-	// Health check endpoints
-	api.HandleFunc("/health", allocationHandler.HealthCheck).Methods("GET")
-
-	// === REGION CRUD ENDPOINTS ===
-	api.HandleFunc("/regions", allocationHandler.GetAllRegions).Methods("GET")
-	api.HandleFunc("/regions", allocationHandler.CreateRegion).Methods("POST")
-	api.HandleFunc("/regions/{region}", allocationHandler.GetRegionHierarchy).Methods("GET")
-	api.HandleFunc("/regions/{region}", allocationHandler.UpdateRegion).Methods("PUT")
-	api.HandleFunc("/regions/{region}", allocationHandler.DeleteRegion).Methods("DELETE")
-
-	// === ZONE CRUD ENDPOINTS ===
-	api.HandleFunc("/regions/{region}/zones", allocationHandler.CreateZone).Methods("POST")
-	api.HandleFunc("/regions/{region}/zones/{zone}", allocationHandler.GetZone).Methods("GET")
-	api.HandleFunc("/regions/{region}/zones/{zone}", allocationHandler.UpdateZone).Methods("PUT")
-	api.HandleFunc("/regions/{region}/zones/{zone}", allocationHandler.DeleteZone).Methods("DELETE")
-
-	// === SUBZONE CRUD ENDPOINTS ===
-	api.HandleFunc("/regions/{region}/zones/{zone}/subzones", allocationHandler.CreateSubZone).Methods("POST")
-	api.HandleFunc("/regions/{region}/zones/{zone}/subzones/{subzone}", allocationHandler.GetSubZoneInfo).Methods("GET")
-	api.HandleFunc("/regions/{region}/zones/{zone}/subzones/{subzone}", allocationHandler.UpdateSubZone).Methods("PUT")
-	api.HandleFunc("/regions/{region}/zones/{zone}/subzones/{subzone}", allocationHandler.DeleteSubZone).Methods("DELETE")
-
-	// === IP MANAGEMENT ENDPOINTS ===
-	api.HandleFunc("/allocate", allocationHandler.AllocateIPs).Methods("POST")
-	api.HandleFunc("/deallocate", allocationHandler.DeallocateIPs).Methods("POST")
-	api.HandleFunc("/reserve", allocationHandler.ReserveIPs).Methods("POST")
-	api.HandleFunc("/unreserve", allocationHandler.UnreserveIPs).Methods("POST")
-
-	// === UTILITY ENDPOINTS ===
-	api.HandleFunc("/regions/{region}/zones/{zone}/subzones/{subzone}/available", allocationHandler.GetAvailableIPs).Methods("GET")
-	api.HandleFunc("/regions/{region}/zones/{zone}/subzones/{subzone}/stats", allocationHandler.GetIPStats).Methods("GET")
-
-	// Add middleware in correct order
-	router.Use(loggingMiddleware)
-	router.Use(recoveryMiddleware)
-
-	// Setup CORS
-	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"}, // In production, specify actual origins
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"*"},
+	// CORS configuration for production
+	config := cors.Config{
+		AllowOrigins:     []string{"*"}, // Configure specific origins for production
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"*"},
+		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
-	})
+		MaxAge:           12 * time.Hour,
+	}
+	router.Use(cors.New(config))
 
-	return c.Handler(router)
-}
+	// Initialize handlers with Zap logger
+	allocationHandler := handlers.NewAllocationHandler(db, logger)
 
-// loggingMiddleware logs HTTP requests with enhanced information
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+	// Root-level health checks
+	router.GET("/health", allocationHandler.HealthCheck)
+	router.GET("/healthz", allocationHandler.HealthCheck)
 
-		// Create a custom response writer to capture status code
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	// API version group
+	v1 := router.Group("/api/v1")
+	{
+		// Health check endpoints
+		v1.GET("/health", allocationHandler.HealthCheck)
 
-		// Call the next handler
-		next.ServeHTTP(rw, r)
+		// Region CRUD endpoints
+		regions := v1.Group("/regions")
+		{
+			regions.GET("", allocationHandler.GetAllRegions)
+			regions.POST("", allocationHandler.CreateRegion)
+			regions.GET("/:region", allocationHandler.GetRegionHierarchy)
+			regions.PUT("/:region", allocationHandler.UpdateRegion)
+			regions.DELETE("/:region", allocationHandler.DeleteRegion)
 
-		// Log the request with more details
-		log.Printf(
-			"[%s] %s %s %s %d %v %s",
-			start.Format("2006-01-02 15:04:05"),
-			r.Method,
-			r.RequestURI,
-			r.RemoteAddr,
-			rw.statusCode,
-			time.Since(start),
-			r.UserAgent(),
-		)
-	})
-}
+			// Zone CRUD endpoints with enhanced CIDR support
+			zones := regions.Group("/:region/zones")
+			{
+				zones.POST("", allocationHandler.CreateZone)
+				zones.GET("/:zone", allocationHandler.GetZone)
+				zones.PUT("/:zone", allocationHandler.UpdateZone)
+				zones.DELETE("/:zone", allocationHandler.DeleteZone)
 
-// responseWriter wraps http.ResponseWriter to capture status code
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
+				// SubZone CRUD endpoints
+				subzones := zones.Group("/:zone/subzones")
+				{
+					subzones.POST("", allocationHandler.CreateSubZone)
+					subzones.GET("/:subzone", allocationHandler.GetSubZoneInfo)
+					subzones.PUT("/:subzone", allocationHandler.UpdateSubZone)
+					subzones.DELETE("/:subzone", allocationHandler.DeleteSubZone)
 
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// recoveryMiddleware recovers from panics and provides detailed error information
-func recoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				log.Printf("Panic recovered in %s %s: %v", r.Method, r.URL.Path, err)
-
-				// Return JSON error response
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{
-					"success": false,
-					"message": "Internal server error occurred",
-					"timestamp": "` + time.Now().Format(time.RFC3339) + `"
-				}`))
+					// Utility endpoints
+					subzones.GET("/:subzone/available", allocationHandler.GetAvailableIPs)
+					subzones.GET("/:subzone/stats", allocationHandler.GetIPStats)
+				}
 			}
-		}()
+		}
 
-		next.ServeHTTP(w, r)
-	})
+		// IP management endpoints (grouped for better organization)
+		ip := v1.Group("/ip")
+		{
+			ip.POST("/allocate", allocationHandler.AllocateIPs)
+			ip.POST("/deallocate", allocationHandler.DeallocateIPs)
+			ip.POST("/reserve", allocationHandler.ReserveIPs)
+			ip.POST("/unreserve", allocationHandler.UnreserveIPs)
+		}
+
+		// Legacy endpoints for backward compatibility
+		v1.POST("/allocate", allocationHandler.AllocateIPs)
+		v1.POST("/deallocate", allocationHandler.DeallocateIPs)
+		v1.POST("/reserve", allocationHandler.ReserveIPs)
+		v1.POST("/unreserve", allocationHandler.UnreserveIPs)
+	}
+
+	return router
 }

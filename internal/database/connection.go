@@ -2,59 +2,40 @@ package database
 
 import (
 	"context"
-	"fmt"
-	"log"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type Database struct {
-	Client *mongo.Client
-	DB     *mongo.Database
-}
+// ConnectDB establishes a connection to MongoDB with enhanced settings
+func ConnectDB(uri, dbName string) (*mongo.Client, error) {
+	// Configure client options for production
+	clientOptions := options.Client().
+		ApplyURI(uri).
+		SetMaxPoolSize(100).
+		SetMinPoolSize(5).
+		SetMaxConnIdleTime(30 * time.Second).
+		SetMaxConnecting(10)
 
-func NewConnection(uri, dbName string) (*Database, error) {
-	// Set connection timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create MongoDB client options
-	clientOptions := options.Client().ApplyURI(uri)
-
-	// Connect to MongoDB
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
+		return nil, err
 	}
 
-	// Ping MongoDB to verify connection
-	if err := client.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("failed to ping MongoDB: %v", err)
+	// Ping the primary to verify connection
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		return nil, err
 	}
 
-	log.Println("Successfully connected to MongoDB")
-
-	db := client.Database(dbName)
-
-	return &Database{
-		Client: client,
-		DB:     db,
-	}, nil
+	return client, nil
 }
 
-func (d *Database) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := d.Client.Disconnect(ctx); err != nil {
-		log.Printf("Error disconnecting from MongoDB: %v", err)
-	} else {
-		log.Println("Successfully disconnected from MongoDB")
-	}
-}
-
-func (d *Database) GetCollection(name string) *mongo.Collection {
-	return d.DB.Collection(name)
+// ContextWithTimeout creates a context with timeout for database operations
+func ContextWithTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
 }
